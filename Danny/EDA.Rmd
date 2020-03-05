@@ -1,0 +1,240 @@
+---
+title: "NCAA EDA"
+author: "Danny E"
+date: "2/29/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+
+## Load libraries
+```{r}
+library(Hmisc)
+library(dplyr)
+library(GGally)
+library(imputeTS) #used for missing values
+library(corrr) #correlation 
+library(gplots) #used for plots such as heatmap
+library(caret)
+library(yarr) #used for ANOVA
+library(e1071) #skewness
+library(mctest) #Farrara-Gluaaber test for multicollinearity
+library(ppcor)  #Farrara-Gluaaber test for multicollinearity
+library(glmnet) #lasso and ridge regularization
+library(rmarkdown)
+library(utf8)
+library(cli)
+library(MASS)
+
+# 
+# library(tidyverse)
+# library(scales)
+# library(gridExtra)
+# library(knitr)
+# library(ggExtra)
+```
+
+
+## Read in data and plotting
+```{r}
+
+tourney_stats <- read.csv("../2020Data/MDataFiles_Stage1/MNCAATourneyDetailedResults.csv", stringsAsFactors = FALSE)
+
+tourney_stats_compact <- read.csv("../2020Data/MDataFiles_Stage1/MNCAATourneyCompactResults.csv",stringsAsFactors = FALSE)
+
+tourney_seeds <- read.csv("../2020Data/MDataFiles_Stage1/MNCAATourneySeeds.csv", stringsAsFactors = FALSE)
+
+team_conferences <- read.csv("../2020Data/MDataFiles_Stage1/MTeamConferences.csv",stringsAsFactors = FALSE)
+
+teams <- read.csv("../2020Data/MDataFiles_Stage1/MTeams.csv",stringsAsFactors = FALSE)
+
+conferences <- read.csv("../2020Data/MDataFiles_Stage1/Conferences.csv", stringsAsFactors = FALSE)
+
+kenpom <- read.csv("Mkenpom2020.csv")
+ncaa2020kenpom <- read.csv("NCAA2020_Kenpom.csv")
+
+
+plot_cols <- c("#498972", "#3E8193", "#BC6E2E", "#A09D3C", "#E06E77", "#7589BC", "#A57BAF", "#4D4D4D")
+
+theme_jason <- function(legend_pos="top", base_size=12, font=NA){
+  
+  # come up with some default text details
+  txt <- element_text(size = base_size+3, colour = "black", face = "plain")
+  bold_txt <- element_text(size = base_size+3, colour = "black", face = "bold")
+  
+  # use the theme_minimal() theme as a baseline
+  theme_minimal(base_size = base_size, base_family = font)+
+    theme(text = txt,
+          # axis title and text
+          axis.title.x = element_text(size = 15, hjust = 1),
+          axis.title.y = element_text(size = 15),
+          # gridlines on plot
+          panel.grid.major = element_line(linetype = 2),
+          panel.grid.minor = element_line(linetype = 2),
+          # title and subtitle text
+          plot.title = element_text(size = 18, colour = "grey25", face = "bold"),
+          plot.subtitle = element_text(size = 16, colour = "grey44"),
+
+          ###### clean up!
+          legend.key = element_blank(),
+          # the strip.* arguments are for faceted plots
+          strip.background = element_blank(),
+          strip.text = element_text(face = "bold", size = 13, colour = "grey35")) +
+
+    #----- AXIS -----#
+    theme(
+      #### remove Tick marks
+      axis.ticks=element_blank(),
+
+      ### legend depends on argument in function and no title
+      legend.position = legend_pos,
+      legend.title = element_blank(),
+      legend.background = element_rect(fill = NULL, size = 0.5,linetype = 2)
+
+    )
+}
+
+head(tourney_stats_compact,5)
+```
+
+
+## Tourney stats
+```{r}
+
+tourney_stats_compact <- tourney_stats_compact %>% 
+  left_join(teams, by = c ("WTeamID" = "TeamID")) %>%
+  left_join(teams, by = c("LTeamID" = "TeamID"))
+
+tourney_stats_compact <- tourney_stats_compact %>%
+  rename(WTeamName = TeamName.x,
+         LTeamName = TeamName.y)
+
+tourney_stats_compact$season_day <- paste(tourney_stats_compact$Season, tourney_stats_compact$DayNum, sep = "_")
+
+
+# then create a feature to label the round of the tournament
+tourney_stats_compact <- tourney_stats_compact %>%
+  mutate(TourneyRound = ifelse(DayNum %in% c(136, 137), "First Round", ifelse(DayNum %in% c(138, 139), "Second Round", ifelse(DayNum %in% c(143, 144), "Sweet 16", ifelse(DayNum %in% c(145, 146), "Elite 8", ifelse(DayNum == 152, "Final Four", "Championship Game")))))) %>%
+  mutate(TourneyRound = factor(TourneyRound, levels = c("First Round", "Second Round", "Sweet 16", "Elite 8", "Final Four", "Championship Game")))
+
+ncaa_champs <- tourney_stats_compact %>%
+  group_by(Season) %>%
+  summarise(max_days = max(DayNum)) %>%
+  mutate(season_day = paste(Season, max_days, sep = "_")) %>%
+  left_join(tourney_stats_compact, by = "season_day") %>% ungroup() %>%
+  ##select(-Season.y) %>%
+  rename(Season = Season.x)
+
+win_plot <- ncaa_champs %>%
+  group_by(WTeamName) %>%
+  summarise(n = n()) %>%
+  ggplot(aes(x=reorder(WTeamName,n), y=n)) +
+  geom_bar(stat = "identity", fill = plot_cols[2], color = "grey") +
+  labs(title = "Strongest Universities", subtitle = "Most Tourney Wins since 1985") +
+  scale_y_continuous(labels = c("0", "1", "2", "3", "4", "5 titles")) +
+  coord_flip() +
+  theme_jason() +
+  theme(axis.title.x = element_blank(), axis.title.y = element_blank())
+
+win_plot
+
+```
+
+## Conference leaders
+```{r}
+
+ncaa_champs %>%
+  dplyr::select(Season, TeamID = WTeamID) %>%
+  left_join(team_conferences, by = c("Season", "TeamID")) %>%
+  left_join(conferences, by = "ConfAbbrev") %>%
+  count(Description) %>%
+  ggplot(aes(x= reorder(Description, n), y= n)) +
+  geom_col(fill = plot_cols[2], color = "grey") +
+  geom_text(aes(label = n), hjust = 1, size = 6, color = "white") +
+  labs(title = "Atlantic Coast Leads the way", subtitle = "Conferences with the most titles since 1985") +
+  coord_flip() +
+  theme_jason() +
+  theme(axis.title.x = element_blank(), axis.title.y = element_blank(), axis.text.x = element_blank()) 
+
+
+```
+## Tourney stats
+```{r}
+
+tourney_seeds$Seed <- as.integer(str_extract_all(tourney_seeds$Seed, "[0-9]+"))
+
+ncaa_champs %>%
+  dplyr::select(Season, TeamID = WTeamID) %>%
+  left_join(tourney_seeds, by = c("Season", "TeamID")) %>%
+  count(Seed, sort = T) %>%
+  mutate(Seed = as.character(Seed)) %>%
+  ggplot(aes(x= reorder(Seed, n), y= n)) +
+  geom_segment(aes(x= Seed, xend = Seed, y= 0, yend = n), color = plot_cols[2], size = 1) +
+  geom_point(size = 4, color = plot_cols[3]) +
+  scale_y_continuous(labels = c("0", "5", "10", "15", "20 Titles", "")) +
+  coord_flip() +
+  theme_jason() +
+  theme(axis.title.x = element_blank(), axis.title.y = element_blank()) +
+  ggtitle("First seed tends to win most titles (23)", subtitle = "Seeds that have won the most titles")
+
+```
+
+## Tourney stats
+```{r}
+
+head(kenpom, 5)
+
+# OD <- kenpom %>%
+#   dplyr::select(Team, AdjustO, AdjustO.Rank) %>%
+#   group_by((Team)) %>%
+#   qplot(kenpom$AdjustO)
+
+ggplot(kenpom, aes(x = kenpom$AdjustO)) + 
+  geom_histogram(color = "darkblue" , fill = "lightblue", binwidth = 2)
+
+ggplot(kenpom, aes(x = kenpom$Seed, y = kenpom$AdjustO)) + geom_point() + geom_smooth(method=lm) + ggtitle("Offensive Rating slightly decreases based on seed rank") + xlab("Seed") + ylab ("Off Rating") + theme(plot.title = element_text(color = "blue", size = 14, face = "bold.italic"))
+
+#head(tourney_stats_compact,5)
+#head(teams,5)
+
+tourney_stats_compact <- tourney_stats_compact %>%
+  left_join(teams, by = c("WTeamID" = "TeamID"))
+
+head(tourney_stats_compact,5)
+
+
+offensive_rating <- tourney_stats_compact %>%
+  left_join(kenpom, by = "Team") %>%
+  dplyr::select(Team, Rank, Seed, WScore, AdjustO.Rank)
+
+head(offensive_rating,5)
+  
+
+
+#summary(kenpom)
+  
+
+```
